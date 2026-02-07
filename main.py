@@ -9,13 +9,19 @@ from typing import TypedDict, Annotated, Literal, List, Optional
 from pydantic import BaseModel, Field
 import operator
 from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from enum import Enum
 from langgraph.types import Send
 from pathlib import Path
+from CONFIG import GROQ_MODEL
+from google import genai
+import time
+import sys
 
 load_dotenv()
 # ===================== Define LLM =====================
-llm = ChatOpenAI(model='gpt-4o-mini')
+gpt_llm = ChatOpenAI(model='gpt-4o-mini')
+groq_llm = ChatGroq(model=GROQ_MODEL)
 
 # ===================== Pydantic Scemas =====================
 class TASK(BaseModel):
@@ -55,7 +61,7 @@ class state_class(TypedDict):
 # ===================== Orchestrator Node =====================
 def orchestrator_node(state: state_class):
     topic = state['topic']
-    planner = llm.with_structured_output(PLAN)
+    planner = gpt_llm.with_structured_output(PLAN)
     plan = planner.invoke(
         [
             SystemMessage(
@@ -91,7 +97,7 @@ def orchestrator_node(state: state_class):
                     "Output must strictly match the Plan schema."
                 )
             ),
-            HumanMessage(content=f"Topic: {state['topic']}"),
+            HumanMessage(content=f"Topic: {topic}"),
         ]
     )
     return {"plan": plan}
@@ -110,63 +116,96 @@ def fanout(state: state_class):
     ]
 
 # ===================== Worker Node =====================
-def worker_node(payload: dict):
+# ===================== Worker Node =====================
+def worker(payload: dict):
     task = payload['task']
     topic = payload['topic']
     plan = payload['plan']
     bullets_text = "\n- " + "\n- ".join(task.bullets)
-
-    section = llm.invoke(
-        SystemMessage(
-            content=(
-                "You are a senior technical writer and developer advocate. Write ONE section of a technical blog post in Markdown.\n\n"
-                "Hard constraints:\n"
-                "- Follow the provided Goal and cover ALL Bullets in order (do not skip or merge bullets).\n"
-                "- Stay close to the Target words (±15%).\n"
-                "- Output ONLY the section content in Markdown (no blog title H1, no extra commentary).\n\n"
-                "Technical quality bar:\n"
-                "- Be precise and implementation-oriented (developers should be able to apply it).\n"
-                "- Prefer concrete details over abstractions: APIs, data structures, protocols, and exact terms.\n"
-                "- When relevant, include at least one of:\n"
-                "  * a small code snippet (minimal, correct, and idiomatic)\n"
-                "  * a tiny example input/output\n"
-                "  * a checklist of steps\n"
-                "  * a diagram described in text (e.g., 'Flow: A -> B -> C')\n"
-                "- Explain trade-offs briefly (performance, cost, complexity, reliability).\n"
-                "- Call out edge cases / failure modes and what to do about them.\n"
-                "- If you mention a best practice, add the 'why' in one sentence.\n\n"
-                "Markdown style:\n"
-                "- Start with a '## <Section Title>' heading.\n"
-                "- Use short paragraphs, bullet lists where helpful, and code fences for code.\n"
-                "- Avoid fluff. Avoid marketing language.\n"
-                "- If you include code, keep it focused on the bullet being addressed.\n"
-                )
-                ),
-        HumanMessage(
-            content=(
-                f"blog title is: {plan.blog_title}"
-                f"blog goal is: {plan.goal}"
-                f"blog audience is: {plan.audience}"
-                f"blog tone is: {plan.tone}"
-                f"topic is: {topic}\n"
-                f"topic is: {task.task_title}\n"
-                f"topic is: {task.section_type}\n"
-                f"topic is: {task.targer_words}\n"
-                f"Bullets : {bullets_text}\n"
-                )
-                )
-                ).content.strip()
-    return {'sections': [section]}
+    
+    # Build the complete prompt as a STRING
+    system_instruction = (
+        "You are a senior technical writer and developer advocate. Write ONE section of a technical blog post in Markdown.\n\n"
+        "Hard constraints:\n"
+        "- Follow the provided Goal and cover ALL Bullets in order (do not skip or merge bullets).\n"
+        "- Stay close to the Target words (±15%).\n"
+        "- Output ONLY the section content in Markdown (no blog title H1, no extra commentary).\n\n"
+        "Technical quality bar:\n"
+        "- Be precise and implementation-oriented (developers should be able to apply it).\n"
+        "- Prefer concrete details over abstractions: APIs, data structures, protocols, and exact terms.\n"
+        "- When relevant, include at least one of:\n"
+        "  * a small code snippet (minimal, correct, and idiomatic)\n"
+        "  * a tiny example input/output\n"
+        "  * a checklist of steps\n"
+        "  * a diagram described in text (e.g., 'Flow: A -> B -> C')\n"
+        "- Explain trade-offs briefly (performance, cost, complexity, reliability).\n"
+        "- Call out edge cases / failure modes and what to do about them.\n"
+        "- If you mention a best practice, add the 'why' in one sentence.\n\n"
+        "Markdown style:\n"
+        "- Start with a '## <Section Title>' heading.\n"
+        "- Use short paragraphs, bullet lists where helpful, and code fences for code.\n"
+        "- Avoid fluff. Avoid marketing language.\n"
+        "- If you include code, keep it focused on the bullet being addressed.\n"
+    )
+    
+    user_message = (
+        f"Blog Title: {plan.blog_title}\n"
+        f"Blog Goal: {plan.goal}\n"
+        f"Audience: {plan.audience}\n"
+        f"Tone: {plan.tone.value}\n\n"
+        f"Topic: {topic}\n"
+        f"Section Title: {task.task_title}\n"
+        f"Section Type: {task.section_type}\n"
+        f"Target Words: {task.target_words}\n"
+        f"Bullets to cover:\n{bullets_text}"
+    )
+    
+    full_prompt = f"{system_instruction}\n\n{user_message}"
+    section = gpt_llm.invoke(full_prompt).content.strip()
+    return {'sections': [(task.id, section)]}
 
 # ===================== Reducer Node =====================
 def reducer_node(state: state_class):
     title = state['plan'].blog_title
-    body = '\n\n'.join(state['sections']).strip()
-
-    final_md = f"# {title}\n\n {body}\n"
-
+    
+    # Sort sections by ID to maintain order
+    sorted_sections = sorted(state['sections'], key=lambda x: x[0])
+    
+    # Extract just the content (second element of tuple)
+    section_contents = [content for _, content in sorted_sections]
+    
+    # Join all sections
+    body = '\n\n'.join(section_contents).strip()
+    
+    # Create final markdown
+    final_md = f"# {title}\n\n{body}\n"
+    
+    # Create filename
     filename = "".join(c if c.isalnum() or c in (" ", "_", "-") else "" for c in title)
     filename = filename.strip().lower().replace(" ", "_") + ".md"
+    
+    # Write to file silently
     Path(filename).write_text(final_md, encoding="utf-8")
+    
+    print(f"✅ Blog created: {filename}")  # Single line confirmation
+    
+    return {"final_result": final_md}
 
-    return {"final": final_md}
+
+# ===================== Define All Nodes =====================
+graph = StateGraph(state_class)
+
+graph.add_node('orchestrator_node', orchestrator_node)
+graph.add_node('worker', worker)
+graph.add_node('reducer_node', reducer_node)
+
+graph.add_edge(START, 'orchestrator_node')
+graph.add_conditional_edges('orchestrator_node', fanout, ['worker'])
+graph.add_edge('worker', 'reducer_node')
+graph.add_edge('reducer_node', END)
+
+agent = graph.compile()
+
+respo = agent.invoke({'topic': HumanMessage(content='PyTorch'), "sections": []})
+
+print(respo)
