@@ -167,17 +167,9 @@ def worker(payload: dict):
 # ===================== Reducer Node =====================
 def reducer_node(state: state_class):
     title = state['plan'].blog_title
-    
-    # Sort sections by ID to maintain order
     sorted_sections = sorted(state['sections'], key=lambda x: x[0])
-    
-    # Extract just the content (second element of tuple)
-    section_contents = [content for _, content in sorted_sections]
-    
-    # Join all sections
+    section_contents = [content for _, content in sorted_sections] # Extract just the content (second element of tuple)
     body = '\n\n'.join(section_contents).strip()
-    
-    # Create final markdown
     final_md = f"# {title}\n\n{body}\n"
     
     # Create filename
@@ -187,10 +179,9 @@ def reducer_node(state: state_class):
     # Write to file silently
     Path(filename).write_text(final_md, encoding="utf-8")
     
-    print(f"✅ Blog created: {filename}")  # Single line confirmation
+    print(f"✅ Blog created: {filename}")
     
     return {"final_result": final_md}
-
 
 # ===================== Define All Nodes =====================
 graph = StateGraph(state_class)
