@@ -197,6 +197,4 @@ graph.add_edge('reducer_node', END)
 
 agent = graph.compile()
 
-respo = agent.invoke({'topic': HumanMessage(content='PyTorch'), "sections": []})
-
-print(respo)
+# respo = agent.invoke({'topic': HumanMessage(content='PyTorch'), "sections": []})
