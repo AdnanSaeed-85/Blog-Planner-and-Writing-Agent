@@ -1,5 +1,5 @@
 import streamlit as st
-from main import agent
+from main import app
 from pathlib import Path
 import time
 
