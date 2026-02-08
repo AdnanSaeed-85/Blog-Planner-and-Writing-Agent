@@ -1,9 +1,6 @@
 # ===================== Import Libraries =====================
-from google import genai
-import time
-import sys
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import START, END, StateGraph
 from typing import TypedDict, Annotated, Literal, List, Optional
 from pydantic import BaseModel, Field
@@ -14,9 +11,7 @@ from enum import Enum
 from langgraph.types import Send
 from pathlib import Path
 from CONFIG import GROQ_MODEL
-from google import genai
-import time
-import sys
+from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
 # ===================== Define LLM =====================
@@ -35,28 +30,89 @@ class TASK(BaseModel):
         ...,
         description="Use 'common_mistakes' exactly once in the plan.",
     )
+    tags: List[str] = Field(default_factory=list)
+    requires_research: bool = False
+    requires_citations: bool = False
+    requires_code: bool = False
 
 class PLAN(BaseModel):
     blog_title: str = Field(..., description="Blog title should be Attractive, Clear and Clean")
     goal: str = Field(..., description="One sentence describing what the reader should be able to do/understand after this section.")
     audience: str = Field(..., description="The intended audience for this blog.")
-
+    blog_kind: Literal["explainer", "tutorial", "news_roundup", "comparison", "system_design"] = "explainer"
     class ToneEnum(str, Enum):
         PROFESSIONAL = "professional"
         CONVERSATIONAL = "conversational"
         EDUCATIONAL = "educational"
         TECHNICAL = "technical"
         HUMOROUS = "humorous"
-
     tone: ToneEnum = Field(..., description="Writing style that matches the target audience and content type")
     tasks: List[TASK]
+
+class Router(BaseModel):
+    need_research: bool = Field(..., description="return True if need research else False")
+    mode: Literal['closed_book', 'hyberid', 'open_book']
+    queries: List[str] = Field(..., default_factory=list)
+
+class EvidenceItem(BaseModel):
+    title: str
+    url: str
+    published_at: Optional[str] = None
+    snippet: Optional[str] = None
+    source: Optional[str] = None
+
+class EvidencePack(BaseModel):
+    evidence: List[EvidenceItem] = Field(..., default_factory=list)
 
 # ===================== Define State =====================
 class state_class(TypedDict):
     topic: str
     plan: PLAN
+    need_research: bool
+    evidence: List[EvidenceItem]
     sections: Annotated[List[tuple[int, str]], operator.add]  # (task_id, section_md)
     final_result: str
+
+# ===================== Router Node =====================
+def router_node(state: state_class):
+    ROUTER_SYSTEM = """
+    You are a routing module for a technical blog planner.
+    Decide whether web research is needed BEFORE planning.
+
+    Modes:
+    - closed_book (needs_research=false):
+    Evergreen topics where correctness does not depend on recent facts (concepts, fundamentals).
+    - hybrid (needs_research=true):
+    Mostly evergreen but needs up-to-date examples/tools/models to be useful.
+    - open_book (needs_research=true):
+    Mostly volatile: weekly roundups, "this week", "latest", rankings, pricing, policy/regulation.
+
+    If needs_research=true:
+    - Output 3–10 high-signal queries.
+    - Queries should be scoped and specific (avoid generic queries like just "AI" or "LLM").
+    - If user asked for "last week/this week/latest", reflect that constraint IN THE QUERIES.
+    """
+
+    topic = state['topic']
+    decider = gpt_llm.with_structured_output(Router)
+    response = decider.invoke(
+        [
+            SystemMessage(content=ROUTER_SYSTEM),
+            HumanMessage(content=topic)
+        ]
+    )
+    return {
+        'need_research': response.need_research,
+        'mode': response.mode,
+        'queries': response.queries
+    }
+
+def route_next(state: state_class):
+    return "research" if state["need_research"] else "orchestrator"
+
+# ===================== Research Node =====================
+def research_node(state: state_class):
+    pass
 
 # ===================== Orchestrator Node =====================
 def orchestrator_node(state: state_class):
