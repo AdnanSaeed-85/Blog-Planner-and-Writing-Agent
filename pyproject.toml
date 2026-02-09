@@ -19,6 +19,7 @@ dependencies = [
     "postgres>=4.0",
     "psycopg[binary]>=3.3.2",
     "pydantic>=2.12.5",
+    "pypdf>=6.7.0",
     "python-dotenv>=1.2.1",
     "streamlit>=1.54.0",
 ]

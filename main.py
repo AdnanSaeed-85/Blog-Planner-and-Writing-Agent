@@ -17,7 +17,6 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 load_dotenv()
 # ===================== Define LLM =====================
 gpt_llm = ChatOpenAI(model='gpt-4o-mini')
-groq_llm = ChatGroq(model=GROQ_MODEL)
 
 # ===================== Pydantic Scemas =====================
 class TASK(BaseModel):
@@ -25,11 +24,13 @@ class TASK(BaseModel):
     task_title: str = Field(..., description="task title should be well structured, clean, and to the point")
     target_words: int = Field(..., description="Target word count for this section (120–550).")
     bullets: str = Field(..., min_length=2, max_length=3, description="must be 2-3 bullets")
-    section_type: Literal[
-        "intro", "core", "examples", "checklist", "common_mistakes", "conclusion"
-    ] = Field(
+    section_type: Literal["intro", "core", "examples", "checklist", "common_mistakes", "conclusion"] = Field(
         ...,
         description="Use 'common_mistakes' exactly once in the plan.",
+    )
+    goal: str = Field(
+        ...,
+        description="One sentence describing what the reader should be able to do/understand after this section.",
     )
     tags: List[str] = Field(default_factory=list)
     requires_research: bool = False
@@ -38,7 +39,6 @@ class TASK(BaseModel):
 
 class PLAN(BaseModel):
     blog_title: str = Field(..., description="Blog title should be Attractive, Clear and Clean")
-    goal: str = Field(..., description="One sentence describing what the reader should be able to do/understand after this section.")
     audience: str = Field(..., description="The intended audience for this blog.")
     blog_kind: Literal["explainer", "tutorial", "news_roundup", "comparison", "system_design"] = "explainer"
     class ToneEnum(str, Enum):
@@ -49,6 +49,7 @@ class PLAN(BaseModel):
         HUMOROUS = "humorous"
     tone: ToneEnum = Field(..., description="Writing style that matches the target audience and content type")
     tasks: List[TASK]
+    constraints: List[str]
 
 class Router(BaseModel):
     need_research: bool = Field(..., description="return True if need research else False")
@@ -70,10 +71,13 @@ class state_class(TypedDict):
     topic: str
     plan: PLAN
     need_research: bool
+    mode: str
+    queries: List[str]
     evidence: List[EvidenceItem]
-    sections: Annotated[List[tuple[int, str]], operator.add]  # (task_id, section_md)
+    sections: Annotated[List[tuple[int, str]], operator.add]
     final_result: str
     recency_days: int
+    as_of: str  #ISO date 
 
 # ===================== Router Node =====================
 def router_node(state: state_class):
@@ -95,6 +99,7 @@ def router_node(state: state_class):
                         """
 
     topic = state['topic']
+
     decider = gpt_llm.with_structured_output(Router)
     response = decider.invoke(
         [
@@ -114,7 +119,8 @@ def router_node(state: state_class):
         'need_research': response.need_research,
         'mode': response.mode,
         'queries': response.queries,
-        'recency_days': recency_days
+        'recency_days': recency_days,
+        'as_of': date.today().isoformat()
     }
 
 
@@ -361,7 +367,7 @@ def worker(payload: dict) -> dict:
                     f"Topic: {topic}\n"
                     f"Mode: {mode}\n"
                     f"As-of: {as_of} (recency_days={recency_days})\n\n"
-                    f"Section title: {task.title}\n"
+                    f"Section title: {task.task_title}\n"
                     f"Goal: {task.goal}\n"
                     f"Target words: {task.target_words}\n"
                     f"Tags: {task.tags}\n"
@@ -416,5 +422,3 @@ g.add_edge("reducer", END)
 app = g.compile()
 
 app
-
-# respo = agent.invoke({'topic': HumanMessage(content='PyTorch'), "sections": []})

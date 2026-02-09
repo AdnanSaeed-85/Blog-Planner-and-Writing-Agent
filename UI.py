@@ -25,8 +25,9 @@ input_text = st.sidebar.text_input('Enter Topic', key='topic_input')
 
 if st.sidebar.button('Generate Blog', type='primary'):
     if input_text:
-        # Clear main area and show streaming
         st.session_state.generating = True
+        st.session_state.plan_data = None
+        st.session_state.research_data = None
         st.rerun()
     else:
         st.sidebar.error('Please enter a topic!')
@@ -38,11 +39,9 @@ st.sidebar.markdown("## 📚 Your Blogs")
 all_blogs = get_all_blogs()
 
 if all_blogs:
-    # Store selected blog in session state
     if 'selected_blog' not in st.session_state:
         st.session_state.selected_blog = all_blogs[0]
     
-    # Create radio buttons for blog selection
     selected = st.sidebar.radio(
         "Select a blog to view:",
         all_blogs,
@@ -52,7 +51,6 @@ if all_blogs:
     
     st.session_state.selected_blog = selected
     
-    # Add delete button
     if st.sidebar.button('🗑️ Delete Selected Blog', type='secondary'):
         Path(selected).unlink()
         st.success(f'Deleted: {selected}')
@@ -69,37 +67,70 @@ if 'generating' in st.session_state and st.session_state.generating:
     st.markdown(f"## Generating blog about: **{input_text}**")
     st.divider()
     
+    # Task bar with expanders
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        with st.expander("📋 Planning", expanded=False):
+            plan_placeholder = st.empty()
+            if st.session_state.plan_data:
+                plan_placeholder.json(st.session_state.plan_data)
+            else:
+                plan_placeholder.info("Waiting for plan...")
+    
+    with col2:
+        with st.expander("🔍 Research", expanded=False):
+            research_placeholder = st.empty()
+            if st.session_state.research_data:
+                if st.session_state.research_data == "no_research":
+                    research_placeholder.info("No online research was performed for this topic.")
+                else:
+                    research_placeholder.json(st.session_state.research_data)
+            else:
+                research_placeholder.info("Waiting for research phase...")
+    
+    st.divider()
+    
+    # Fixed status at top
+    status_placeholder = st.empty()
+    status_placeholder.info('✍️ Writing sections...')
+    
     # Create placeholder for streaming content
     stream_placeholder = st.empty()
-    status_placeholder = st.empty()
     
-    # Stream the generation process
     accumulated_content = ""
     
     try:
-        # Use streaming with agent
         for event in app.stream({'topic': input_text, 'sections': []}):
-            # Check if sections are being added
+            
+            # Capture orchestrator plan
+            if 'orchestrator' in event:
+                plan_dict = event['orchestrator'].get('plan')
+                if plan_dict:
+                    st.session_state.plan_data = plan_dict
+                    plan_placeholder.json(plan_dict)
+            
+            # Capture research results
+            if 'research' in event:
+                evidence = event['research'].get('evidence', [])
+                if evidence:
+                    st.session_state.research_data = evidence
+                    research_placeholder.json(evidence)
+                else:
+                    st.session_state.research_data = "no_research"
+                    research_placeholder.info("No online research was performed for this topic.")
+            
+            # Stream worker sections
             if 'worker' in event:
                 sections_data = event['worker'].get('sections', [])
                 if sections_data:
                     for task_id, section_content in sections_data:
                         accumulated_content += section_content + "\n\n"
-                        # Update the display in real-time
                         stream_placeholder.markdown(accumulated_content)
-            
-            # Show status
-            if 'orchestrator_node' in event:
-                status_placeholder.info('📋 Planning blog structure...')
-            elif 'worker' in event:
-                status_placeholder.success('✍️ Writing sections...')
-            elif 'reducer_node' in event:
-                status_placeholder.success('📦 Finalizing blog...')
         
         status_placeholder.success('✅ Blog generated successfully!')
         time.sleep(1)
         
-        # Clear generating flag and refresh
         st.session_state.generating = False
         st.rerun()
         
@@ -108,15 +139,12 @@ if 'generating' in st.session_state and st.session_state.generating:
         st.session_state.generating = False
 
 elif all_blogs and st.session_state.selected_blog:
-    # Display selected blog
     blog_content = read_blog(st.session_state.selected_blog)
     
-    # Show metadata
     col1, col2 = st.columns([3, 1])
     with col1:
         st.caption(f'📄 Currently viewing: **{st.session_state.selected_blog}**')
     with col2:
-        # Download button
         st.download_button(
             label='⬇️ Download',
             data=blog_content,
@@ -125,8 +153,6 @@ elif all_blogs and st.session_state.selected_blog:
         )
     
     st.divider()
-    
-    # Display the blog content
     st.markdown(blog_content)
 else:
     st.info("👈 Enter a topic in the sidebar to generate your first blog!")
