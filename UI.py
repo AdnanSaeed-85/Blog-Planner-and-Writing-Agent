@@ -78,7 +78,7 @@ if 'generating' in st.session_state and st.session_state.generating:
     
     try:
         # Use streaming with agent
-        for event in agent.stream({'topic': input_text, 'sections': []}):
+        for event in app.stream({'topic': input_text, 'sections': []}):
             # Check if sections are being added
             if 'worker' in event:
                 sections_data = event['worker'].get('sections', [])
